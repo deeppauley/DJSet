@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+
+.env
+.last_soulseek_search.json
+track_paster.log
+*.m3u8
+
+slskd-data/
+slskd-downloads/
+slskd-incomplete/
+
+*.bak

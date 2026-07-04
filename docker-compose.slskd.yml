@@ -1,0 +1,16 @@
+services:
+  slskd:
+    image: slskd/slskd:latest
+    container_name: slskd
+    restart: unless-stopped
+    ports:
+      - "5030:5030"
+      - "5031:5031"
+      - "50300:50300"
+    environment:
+      SLSKD_REMOTE_CONFIGURATION: "true"
+      SLSKD_API_KEY: "${SLSKD_API_KEY:?Set SLSKD_API_KEY in your shell or .env file}"
+    volumes:
+      - ./slskd-data:/app
+      - ./slskd-downloads:/downloads
+      - ./slskd-incomplete:/incomplete
