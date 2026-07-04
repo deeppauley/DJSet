@@ -3,7 +3,11 @@ __pycache__/
 
 .env
 .last_soulseek_search.json
+soulseek_batch_report.json
 track_paster.log
+web_app.log
+web_app.err
+sessions/
 *.m3u8
 
 slskd-data/

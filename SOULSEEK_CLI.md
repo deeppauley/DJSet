@@ -57,6 +57,22 @@ py soulseek_cli.py download 1
 py soulseek_cli.py downloads
 ```
 
+## Local Web App
+
+Start the browser app:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start_web_app.ps1
+```
+
+Open:
+
+```text
+http://127.0.0.1:5055
+```
+
+The app lets you paste a plain text track list, start a session, monitor queued/missing tracks, and create a session `.m3u8` playlist. Session files are written under `sessions/`, which is ignored by Git.
+
 Search results are cached to `.last_soulseek_search.json`, so `download 1` queues the first result from the most recent search.
 
 `best-download` ranks results with these rules:

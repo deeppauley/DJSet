@@ -14,6 +14,8 @@ import slskd_api
 DEFAULT_URL = "http://localhost:5030"
 DEFAULT_TIMEOUT_SECONDS = 15
 LAST_SEARCH_FILE = Path(__file__).with_name(".last_soulseek_search.json")
+DEFAULT_TRACKS_FILE = Path(__file__).with_name("tracks.txt")
+DEFAULT_BATCH_REPORT_FILE = Path(__file__).with_name("soulseek_batch_report.json")
 SUPPORTED_EXTENSIONS = ["flac", "mp3", "wav", "aiff", "aif", "m4a"]
 STOP_WORDS = {
     "and",
@@ -29,6 +31,22 @@ STOP_WORDS = {
     "mix",
     "remix",
     "with",
+    "adjacent",
+    "beach",
+    "club",
+    "deep",
+    "disco",
+    "festival",
+    "house",
+    "melodic",
+    "modern",
+    "nu",
+    "sax",
+    "smooth",
+    "sunset",
+    "tropical",
+    "version",
+    "yacht",
 }
 
 
@@ -108,8 +126,6 @@ def query_variants(query: str) -> list[str]:
     variants = [query]
     without_parentheticals = re.sub(r"\([^)]*\)", " ", query)
     without_parentheticals = re.sub(r"\s+", " ", without_parentheticals).strip()
-    if without_parentheticals and without_parentheticals != query:
-        variants.append(without_parentheticals)
 
     remix = remix_text(query)
     if remix:
@@ -123,10 +139,8 @@ def query_variants(query: str) -> list[str]:
             variants.append(" ".join(title_short_tail + remix_query_tokens))
     else:
         base_tokens = [token for token in normalize_text(query).split() if token not in STOP_WORDS]
-        if len(base_tokens) > 4:
-            variants.append(" ".join(base_tokens[-4:]))
-        if len(base_tokens) > 2:
-            variants.append(" ".join(base_tokens[-2:]))
+        if base_tokens:
+            variants.append(" ".join(base_tokens))
 
     unique_variants = []
     seen = set()
@@ -139,7 +153,12 @@ def query_variants(query: str) -> list[str]:
 
 
 def result_filename_text(result: dict[str, Any]) -> str:
-    return normalize_text(result.get("filename", ""))
+    return normalize_text(result_basename(result))
+
+
+def result_basename(result: dict[str, Any]) -> str:
+    filename = result.get("filename", "")
+    return re.split(r"[\\/]", filename)[-1]
 
 
 def is_320_mp3(result: dict[str, Any]) -> bool:
@@ -182,7 +201,7 @@ def serialize_result(username: str, file_item: Any, response: Any) -> dict[str, 
 
 def result_sort_key(result: dict[str, Any], query: str = "") -> tuple[Any, ...]:
     required_remix_tokens = remix_tokens(query)
-    filename_tokens = text_tokens(result.get("filename", ""))
+    filename_tokens = text_tokens(result_basename(result))
     remix_miss = 0
     if required_remix_tokens:
         remix_miss = 0 if required_remix_tokens <= filename_tokens else 1
@@ -212,7 +231,31 @@ def print_result(index: int, result: dict[str, Any]) -> None:
     print(f"     {result['filename']}")
 
 
-def search_results(client: slskd_api.SlskdClient, args: argparse.Namespace, query: str) -> list[dict[str, Any]]:
+def relevance_score(result: dict[str, Any], query: str) -> float:
+    query_tokens = text_tokens(query)
+    filename_tokens = text_tokens(result_basename(result))
+    if not query_tokens:
+        return 0
+    return len(query_tokens & filename_tokens) / len(query_tokens)
+
+
+def is_relevant_result(result: dict[str, Any], query: str) -> bool:
+    query_tokens = text_tokens(query)
+    filename_tokens = text_tokens(result_basename(result))
+    required_remix_tokens = remix_tokens(query)
+    if required_remix_tokens and not required_remix_tokens <= filename_tokens:
+        return False
+    if len(query_tokens) <= 2:
+        return len(query_tokens & filename_tokens) == len(query_tokens)
+    return relevance_score(result, query) >= 0.45 and len(query_tokens & filename_tokens) >= 2
+
+
+def search_results(
+    client: slskd_api.SlskdClient,
+    args: argparse.Namespace,
+    query: str,
+    relevance_query: str | None = None,
+) -> list[dict[str, Any]]:
     state = client.searches.search_text(
         query,
         responseLimit=args.responses,
@@ -242,7 +285,10 @@ def search_results(client: slskd_api.SlskdClient, args: argparse.Namespace, quer
             filename = get_value(file_item, "filename", "")
             if args.ext and not filename.lower().endswith(extensions):
                 continue
-            results.append(serialize_result(username, file_item, response))
+            result = serialize_result(username, file_item, response)
+            if relevance_query and not is_relevant_result(result, relevance_query):
+                continue
+            results.append(result)
 
     results.sort(key=lambda result: result_sort_key(result, query))
     return results
@@ -280,22 +326,11 @@ def command_search(args: argparse.Namespace) -> int:
 
 def command_best_download(args: argparse.Namespace) -> int:
     client = make_client()
-    results = []
-    used_query = args.query
-    variants = [args.query] if args.no_broad else query_variants(args.query)
-    for query in variants:
-        print(f"Trying: {query}")
-        results = search_results(client, args, query)
-        if results:
-            used_query = query
-            break
-        time.sleep(args.pause)
-
-    if not results:
+    best, used_query, results = find_best_result(client, args, args.query)
+    if not best:
         print(f"No results: {args.query}")
         return 1
 
-    best = results[0]
     LAST_SEARCH_FILE.write_text(json.dumps(results[: args.limit], indent=2), encoding="utf-8")
     print(f"Best result for: {used_query}")
     print_result(1, best)
@@ -307,6 +342,88 @@ def command_best_download(args: argparse.Namespace) -> int:
     ok = client.transfers.enqueue(best["username"], [best["file"]])
     print(f"queued: {best['username']} | {best['filename']}" if ok else "queue request failed")
     return 0 if ok else 1
+
+
+def find_best_result(
+    client: slskd_api.SlskdClient,
+    args: argparse.Namespace,
+    query: str,
+) -> tuple[dict[str, Any] | None, str, list[dict[str, Any]]]:
+    results = []
+    used_query = query
+    variants = [query] if args.no_broad else query_variants(query)
+    for variant in variants:
+        print(f"Trying: {variant}")
+        results = search_results(client, args, variant, relevance_query=query)
+        if results:
+            used_query = variant
+            break
+        time.sleep(args.pause)
+
+    if not results:
+        return None, used_query, []
+
+    return results[0], used_query, results
+
+
+def command_batch_best_download(args: argparse.Namespace) -> int:
+    client = make_client()
+    tracks = [
+        line.strip()
+        for line in args.file.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if args.start_index > 1:
+        tracks = tracks[args.start_index - 1 :]
+    if args.max_tracks:
+        tracks = tracks[: args.max_tracks]
+
+    report: list[dict[str, Any]] = []
+    queued_count = 0
+    missing_count = 0
+
+    for index, query in enumerate(tracks, start=1):
+        display_index = args.start_index + index - 1
+        print(f"\n[{display_index}] [{index}/{len(tracks)}] {query}")
+        best, used_query, results = find_best_result(client, args, query)
+        if not best:
+            missing_count += 1
+            report.append({"query": query, "status": "missing", "usedQuery": used_query})
+            print("No results.")
+            continue
+
+        print_result(1, best)
+        item = {
+            "query": query,
+            "status": "dry-run" if args.dry_run else "queued",
+            "usedQuery": used_query,
+            "username": best["username"],
+            "filename": best["filename"],
+            "bitRate": best.get("bitRate"),
+            "length": best.get("length"),
+            "size": best.get("size"),
+            "qualityRank": quality_rank(best),
+        }
+
+        if args.dry_run:
+            print("Dry run: not queued.")
+        else:
+            ok = client.transfers.enqueue(best["username"], [best["file"]])
+            if ok:
+                queued_count += 1
+                print(f"queued: {best['username']} | {best['filename']}")
+            else:
+                item["status"] = "queue_failed"
+                print("queue request failed")
+
+        report.append(item)
+        args.report.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        time.sleep(args.pause)
+
+    print(f"\nQueued: {queued_count}")
+    print(f"Missing: {missing_count}")
+    print(f"Report: {args.report}")
+    return 0 if missing_count == 0 else 1
 
 
 def load_saved_results() -> list[dict[str, Any]]:
@@ -393,6 +510,26 @@ def build_parser() -> argparse.ArgumentParser:
     best_download.add_argument("--no-broad", action="store_true", help="Only search the query exactly as typed.")
     best_download.add_argument("--pause", type=float, default=2.0, help="Seconds to pause between broad query attempts.")
     best_download.set_defaults(func=command_best_download)
+
+    batch_best_download = subparsers.add_parser(
+        "batch-best-download",
+        help="Run best-download for each non-empty line in a track list.",
+    )
+    batch_best_download.add_argument("--file", type=Path, default=DEFAULT_TRACKS_FILE)
+    batch_best_download.add_argument("--report", type=Path, default=DEFAULT_BATCH_REPORT_FILE)
+    batch_best_download.add_argument("--start-index", type=int, default=1)
+    batch_best_download.add_argument("--max-tracks", type=int, default=0)
+    batch_best_download.add_argument("--limit", type=int, default=20, help="Maximum ranked files to cache per track.")
+    batch_best_download.add_argument("--responses", type=int, default=50, help="Maximum peer responses to collect.")
+    batch_best_download.add_argument("--file-limit", type=int, default=10000)
+    batch_best_download.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS, help="Search timeout in seconds.")
+    batch_best_download.add_argument("--min-speed", type=int, default=0, help="Minimum peer upload speed in bytes/sec.")
+    batch_best_download.add_argument("--max-queue", type=int, default=1000000)
+    batch_best_download.add_argument("--ext", nargs="*", default=SUPPORTED_EXTENSIONS)
+    batch_best_download.add_argument("--dry-run", action="store_true", help="Show best results without queueing them.")
+    batch_best_download.add_argument("--no-broad", action="store_true", help="Only search each query exactly as typed.")
+    batch_best_download.add_argument("--pause", type=float, default=2.0, help="Seconds to pause between searches.")
+    batch_best_download.set_defaults(func=command_batch_best_download)
 
     download = subparsers.add_parser("download", help="Queue a download from saved search results or explicit peer/path.")
     download.add_argument("index", type=int, nargs="?", help="Result index from the most recent search.")
