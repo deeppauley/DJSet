@@ -33,7 +33,8 @@ if ($output.Count -gt 0 -and $output[$output.Count - 1].Trim() -ne "") {
 $output.Add($startMarker)
 $output.Add("shares:")
 $output.Add("  directories:")
-$output.Add("    - /app/downloads")
+$output.Add("    - '[app-downloads]/app/downloads'")
+$output.Add("    - '[slskd-downloads]/downloads'")
 $output.Add("  filters:")
 $output.Add("    - \.ini$")
 $output.Add("    - Thumbs.db$")
@@ -48,4 +49,4 @@ Copy-Item -LiteralPath $configPath -Destination "$configPath.bak" -Force
 Set-Content -LiteralPath $configPath -Value $output -Encoding UTF8
 
 docker compose -f "$PSScriptRoot\docker-compose.slskd.yml" restart slskd
-Write-Host "Updated slskd shares to include /app/downloads and restarted slskd."
+Write-Host "Updated slskd shares to include /app/downloads and /downloads, then restarted slskd."

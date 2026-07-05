@@ -13,6 +13,7 @@ import slskd_api
 
 DEFAULT_URL = "http://localhost:5030"
 DEFAULT_TIMEOUT_SECONDS = 15
+DEFAULT_EMPTY_RESPONSE_ABORT_SECONDS = 3.0
 LAST_SEARCH_FILE = Path(__file__).with_name(".last_soulseek_search.json")
 DEFAULT_TRACKS_FILE = Path(__file__).with_name("tracks.txt")
 DEFAULT_BATCH_REPORT_FILE = Path(__file__).with_name("soulseek_batch_report.json")
@@ -48,6 +49,10 @@ STOP_WORDS = {
     "version",
     "yacht",
 }
+
+
+class SearchCancelled(Exception):
+    pass
 
 
 def get_value(item: Any, key: str, default: Any = None) -> Any:
@@ -209,10 +214,10 @@ def result_sort_key(result: dict[str, Any], query: str = "") -> tuple[Any, ...]:
     return (
         remix_miss,
         quality_rank(result),
+        result.get("queueLength") if result.get("queueLength") is not None else 999999,
         -(result.get("length") or 0),
         not result.get("hasFreeUploadSlot", False),
         result.get("isLocked", False),
-        result.get("queueLength") if result.get("queueLength") is not None else 999999,
         -(result.get("uploadSpeed") or 0),
     )
 
@@ -255,6 +260,7 @@ def search_results(
     args: argparse.Namespace,
     query: str,
     relevance_query: str | None = None,
+    cancel_check=None,
 ) -> list[dict[str, Any]]:
     state = client.searches.search_text(
         query,
@@ -266,14 +272,32 @@ def search_results(
         maximumPeerQueueLength=args.max_queue,
     )
     search_id = get_value(state, "id")
+    empty_response_abort_seconds = float(
+        getattr(args, "empty_response_abort_seconds", DEFAULT_EMPTY_RESPONSE_ABORT_SECONDS)
+    )
+    started_at = time.time()
     deadline = time.time() + args.timeout + 5
     last_response_count = 0
     while time.time() < deadline:
+        if cancel_check and cancel_check():
+            client.searches.stop(search_id)
+            raise SearchCancelled(query)
         state = client.searches.state(search_id)
         last_response_count = get_value(state, "responseCount", 0) or last_response_count
         if get_value(state, "isComplete", False) and last_response_count > 0:
             break
+        if (
+            empty_response_abort_seconds > 0
+            and last_response_count == 0
+            and (time.time() - started_at) >= empty_response_abort_seconds
+        ):
+            client.searches.stop(search_id)
+            break
         time.sleep(0.5)
+
+    if cancel_check and cancel_check():
+        client.searches.stop(search_id)
+        raise SearchCancelled(query)
 
     responses = client.searches.search_responses(search_id)
     results: list[dict[str, Any]] = []
@@ -348,13 +372,21 @@ def find_best_result(
     client: slskd_api.SlskdClient,
     args: argparse.Namespace,
     query: str,
+    excluded: set[tuple[str, str]] | None = None,
+    cancel_check=None,
 ) -> tuple[dict[str, Any] | None, str, list[dict[str, Any]]]:
     results = []
     used_query = query
+    excluded = excluded or set()
     variants = [query] if args.no_broad else query_variants(query)
     for variant in variants:
         print(f"Trying: {variant}")
-        results = search_results(client, args, variant, relevance_query=query)
+        results = search_results(client, args, variant, relevance_query=query, cancel_check=cancel_check)
+        results = [
+            result
+            for result in results
+            if (result.get("username", ""), result.get("filename", "")) not in excluded
+        ]
         if results:
             used_query = variant
             break
@@ -489,6 +521,12 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--responses", type=int, default=50, help="Maximum peer responses to collect.")
     search.add_argument("--file-limit", type=int, default=10000)
     search.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS, help="Search timeout in seconds.")
+    search.add_argument(
+        "--empty-response-abort-seconds",
+        type=float,
+        default=DEFAULT_EMPTY_RESPONSE_ABORT_SECONDS,
+        help="Abort a search early if it has produced zero responses after this many seconds.",
+    )
     search.add_argument("--min-speed", type=int, default=0, help="Minimum peer upload speed in bytes/sec.")
     search.add_argument("--max-queue", type=int, default=1000000)
     search.add_argument("--ext", nargs="*", default=SUPPORTED_EXTENSIONS)
@@ -503,6 +541,12 @@ def build_parser() -> argparse.ArgumentParser:
     best_download.add_argument("--responses", type=int, default=50, help="Maximum peer responses to collect.")
     best_download.add_argument("--file-limit", type=int, default=10000)
     best_download.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS, help="Search timeout in seconds.")
+    best_download.add_argument(
+        "--empty-response-abort-seconds",
+        type=float,
+        default=DEFAULT_EMPTY_RESPONSE_ABORT_SECONDS,
+        help="Abort a search early if it has produced zero responses after this many seconds.",
+    )
     best_download.add_argument("--min-speed", type=int, default=0, help="Minimum peer upload speed in bytes/sec.")
     best_download.add_argument("--max-queue", type=int, default=1000000)
     best_download.add_argument("--ext", nargs="*", default=SUPPORTED_EXTENSIONS)
@@ -523,6 +567,12 @@ def build_parser() -> argparse.ArgumentParser:
     batch_best_download.add_argument("--responses", type=int, default=50, help="Maximum peer responses to collect.")
     batch_best_download.add_argument("--file-limit", type=int, default=10000)
     batch_best_download.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS, help="Search timeout in seconds.")
+    batch_best_download.add_argument(
+        "--empty-response-abort-seconds",
+        type=float,
+        default=DEFAULT_EMPTY_RESPONSE_ABORT_SECONDS,
+        help="Abort a search early if it has produced zero responses after this many seconds.",
+    )
     batch_best_download.add_argument("--min-speed", type=int, default=0, help="Minimum peer upload speed in bytes/sec.")
     batch_best_download.add_argument("--max-queue", type=int, default=1000000)
     batch_best_download.add_argument("--ext", nargs="*", default=SUPPORTED_EXTENSIONS)

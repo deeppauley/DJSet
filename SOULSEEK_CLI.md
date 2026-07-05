@@ -73,6 +73,13 @@ http://127.0.0.1:5055
 
 The app lets you paste a plain text track list, start a session, monitor queued/missing tracks, and create a session `.m3u8` playlist. Session files are written under `sessions/`, which is ignored by Git.
 
+After the search phase completes, the web app keeps monitoring queued downloads. If a track is still remotely queued or ends in an error/rejected/cancelled state after the retry window, it searches again and queues a different user/file candidate. Defaults:
+
+```text
+DJSET_RETRY_AFTER_SECONDS=300
+DJSET_MAX_RETRIES=3
+```
+
 Search results are cached to `.last_soulseek_search.json`, so `download 1` queues the first result from the most recent search.
 
 `best-download` ranks results with these rules:
