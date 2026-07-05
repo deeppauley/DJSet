@@ -480,7 +480,7 @@ def create_playlist(session: dict[str, Any]) -> Path:
 def create_rekordbox_export(session: dict[str, Any]) -> Path:
     files = session_audio_files(session)
     session = read_session(session["id"])
-    playlist_path = SESSIONS_DIR / session["id"] / f"{playlist_base_name(session, 'Rekordbox Playlist')}.m3u8"
+    playlist_path = SESSIONS_DIR / session["id"] / f"{playlist_base_name(session)}.m3u8"
     lines, _simple_lines = build_playlist_lines(session, files)
     playlist_path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8", newline="")
 
