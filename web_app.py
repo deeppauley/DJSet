@@ -65,6 +65,25 @@ def slugify(value: str) -> str:
     return value.strip("-") or "session"
 
 
+def title_case_words(value: str) -> str:
+    words = re.split(r"\s+", value.strip())
+    return " ".join(word[:1].upper() + word[1:] for word in words if word)
+
+
+def safe_filename(value: str) -> str:
+    value = re.sub(r'[<>:"/\\|?*]+', " ", value)
+    value = re.sub(r"\s+", " ", value).strip(" .")
+    return value or "Playlist"
+
+
+def playlist_base_name(session: dict[str, Any], suffix: str = "Playlist") -> str:
+    raw_name = session.get("playlistName") or session.get("name") or "Playlist"
+    pretty_name = title_case_words(raw_name.replace("-", " "))
+    if suffix and suffix.lower() not in pretty_name.lower():
+        pretty_name = f"{pretty_name} {suffix}"
+    return safe_filename(pretty_name)
+
+
 def parse_track_list(raw_text: str) -> list[str]:
     tracks: list[str] = []
     for raw_line in raw_text.splitlines():
@@ -437,8 +456,9 @@ def create_playlist(session: dict[str, Any]) -> Path:
     files = session_audio_files(session)
     session = read_session(session["id"])
 
-    playlist_path = SESSIONS_DIR / session["id"] / f"{session['id']}.m3u8"
-    simple_playlist_path = SESSIONS_DIR / session["id"] / f"{session['id']}.m3u"
+    base_name = playlist_base_name(session)
+    playlist_path = SESSIONS_DIR / session["id"] / f"{base_name}.m3u8"
+    simple_playlist_path = SESSIONS_DIR / session["id"] / f"{base_name}.m3u"
     lines, simple_lines = build_playlist_lines(session, files)
     playlist_path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8", newline="")
     simple_playlist_path.write_text("\r\n".join(simple_lines) + "\r\n", encoding="mbcs", newline="")
@@ -460,7 +480,7 @@ def create_playlist(session: dict[str, Any]) -> Path:
 def create_rekordbox_export(session: dict[str, Any]) -> Path:
     files = session_audio_files(session)
     session = read_session(session["id"])
-    playlist_path = SESSIONS_DIR / session["id"] / f"{session['id']}-rekordbox.m3u8"
+    playlist_path = SESSIONS_DIR / session["id"] / f"{playlist_base_name(session, 'Rekordbox Playlist')}.m3u8"
     lines, _simple_lines = build_playlist_lines(session, files)
     playlist_path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8", newline="")
 
